@@ -14,7 +14,7 @@ app.post("/commission-device", (req, res) => {
         return res.status(400).json({ error: "Missing parameters" });
     }
 
-    const command = `cd /home/ubuntu/apps && ./chip-tool pairing ble-thread ${node_id} ${operational_dataset} ${pin_code} ${discriminator}`;
+    const command = `cd /home/ubuntu/apps && ./chip-tool pairing ble-thread ${node_id} ${pin_code} ${discriminator}`;
     
     exec(command, (error, stdout, stderr) => {
         if (error) {
