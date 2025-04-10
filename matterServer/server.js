@@ -231,18 +231,19 @@ const parseDiscoveryResult = (result) => {
                     devices.push(currentDevice);
                 }
                 currentDevice = {
-                    name: '',
-                    setupPinCode: '',
-                    setupDiscriminator: '',
-                    vendorId: '',
-                    productId: '',
-                    deviceType: '',
-                    instanceName: '',
-                    addresses: [],
-                    port: '',
-                    pairingHint: '',
-                    commissioningMode: '',
-                    supportsCommissionerGeneratedPasscode: false
+                    nodeId: '',              // Matter 노드 ID
+                    name: '',                // 디바이스 이름
+                    setupPinCode: '',        // Matter 설정 PIN 코드
+                    setupDiscriminator: '',  // Matter discriminator
+                    vendorId: '',           // 벤더 ID
+                    productId: '',          // 제품 ID
+                    deviceType: '',         // 디바이스 타입
+                    instanceName: '',       // 인스턴스 이름
+                    addresses: [],          // IP 주소 목록
+                    port: '',              // 포트
+                    pairingHint: '',       // 페어링 힌트
+                    commissioningMode: '', // 커미셔닝 모드
+                    type: 'wifi'           // 네트워크 타입 (wifi/thread)
                 };
                 continue;
             }
@@ -292,10 +293,6 @@ const parseDiscoveryResult = (result) => {
             else if (cleanLine.includes('Commissioning Mode:')) {
                 currentDevice.commissioningMode = extractValue(cleanLine, 'Commissioning Mode');
             }
-            else if (cleanLine.includes('Supports Commissioner Generated Passcode:')) {
-                currentDevice.supportsCommissionerGeneratedPasscode = 
-                    extractValue(cleanLine, 'Supports Commissioner Generated Passcode') === 'true';
-            }
         }
 
         // 마지막 디바이스 추가
@@ -303,17 +300,10 @@ const parseDiscoveryResult = (result) => {
             devices.push(currentDevice);
         }
 
-        // 디버깅을 위한 로그
-        logToFile('INFO', `파싱된 디바이스 수: ${devices.length}`);
-        if (devices.length > 0) {
-            logToFile('INFO', `첫 번째 디바이스 정보: ${JSON.stringify(devices[0], null, 2)}`);
-        }
-
         // nodeId 자동 생성 및 할당
         return devices.map((device, index) => ({
             ...device,
-            nodeId: (index + 1).toString(),
-            type: 'wifi'
+            nodeId: (index + 1).toString()
         }));
 
     } catch (error) {
@@ -343,8 +333,98 @@ const detectDeviceType = (deviceInfo) => {
     return 'unknown';
 };
 
-// 1. Matter 디바이스 검색 시작
-app.post("/api/device/search", async (req, res) => {
+// Matter 디바이스 Wi-Fi 페어링 및 커미셔닝
+app.post("/api/device/setup", async (req, res) => {
+    const { 
+        nodeId,            // Matter 노드 ID
+        setupPinCode,      // Matter 설정 PIN 코드
+        setupDiscriminator,// Matter discriminator
+        ssid,             // Wi-Fi SSID
+        password,         // Wi-Fi 비밀번호
+        paaStorePath      // 선택사항: 커스텀 PAA 인증서 경로
+    } = req.body;
+
+    try {
+        logToFile('DEBUG', `Wi-Fi 페어링 및 커미셔닝 요청 수신 - 요청 데이터: ${JSON.stringify({
+            nodeId,
+            setupDiscriminator,
+            ssid,
+            setupPinCode: '***',
+            password: '***'
+        }, null, 2)}`);
+
+        // 필수 파라미터 검증
+        if (!setupPinCode || !ssid || !password) {
+            const error = new Error("필수 파라미터가 누락되었습니다. (setupPinCode, ssid, password)");
+            logToFile('ERROR', error.message);
+            return res.status(400).json({
+                status: "error",
+                message: error.message
+            });
+        }
+
+        // 디바이스 상태 확인
+        const deviceInfo = deviceState.get(nodeId);
+        if (!deviceInfo) {
+            const error = new Error(`디바이스를 찾을 수 없습니다. (nodeId: ${nodeId})`);
+            logToFile('ERROR', error.message);
+            return res.status(404).json({
+                status: "error",
+                message: error.message
+            });
+        }
+
+        logToFile('INFO', `Wi-Fi 페어링 및 커미셔닝 시작 - Device: ${deviceInfo.name}, SSID: ${ssid}`);
+        
+        // PAA 인증서 경로 설정
+        const paaCertPath = paaStorePath || MATTER_CONFIG.paaStorePath;
+        
+        // Wi-Fi 페어링 및 커미셔닝 명령어 구성
+        const command = `pairing code-wifi ${nodeId} "${ssid}" "${password}" ${setupPinCode} --paa-trust-store-path ${paaCertPath}`;
+        
+        logToFile('INFO', `페어링 및 커미셔닝 명령어 실행 (민감 정보 제외): pairing code-wifi ${nodeId} [SSID] [PASSWORD] [SETUP_PIN_CODE] --paa-trust-store-path ${paaCertPath}`);
+        
+        const result = await executeMatterCommand(command);
+
+        // 디바이스 상태 업데이트
+        const updatedDeviceInfo = {
+            ...deviceInfo,
+            status: 'commissioned',
+            network: {
+                ssid: ssid,
+                timestamp: new Date().toISOString()
+            },
+            setupPinCode,
+            setupDiscriminator
+        };
+        
+        deviceState.set(nodeId, updatedDeviceInfo);
+
+        res.json({
+            status: "success",
+            message: "Wi-Fi 페어링 및 커미셔닝 완료",
+            deviceInfo: {
+                ...updatedDeviceInfo,
+                // 민감 정보 제외
+                network: {
+                    ssid: ssid,
+                    timestamp: new Date().toISOString()
+                }
+            }
+        });
+    } catch (error) {
+        logToFile('ERROR', `페어링 및 커미셔닝 중 오류 발생: ${error.message}`);
+        logToFile('ERROR', `스택 트레이스: ${error.stack}`);
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
+// Matter 디바이스 검색
+app.get("/api/device/search", async (req, res) => {
     try {
         logToFile('INFO', `Matter 디바이스 검색 시작`);
         const command = `discover commissionables`;
@@ -364,133 +444,6 @@ app.post("/api/device/search", async (req, res) => {
             status: "success",
             message: devices.length > 0 ? "디바이스 검색 완료" : "검색된 디바이스가 없습니다.",
             devices: devices
-        });
-    } catch (error) {
-        const errorDetails = handleMatterError(error);
-        res.status(500).json({
-            status: "error",
-            ...errorDetails
-        });
-    }
-});
-
-// 2. 검색된 디바이스와 페어링 시도
-app.post("/api/device/pair", async (req, res) => {
-    const { 
-        deviceId,
-        setupCode,     // QR 코드 또는 수동 페어링 코드
-        discriminator  // QR 코드에서 추출한 discriminator (선택사항)
-    } = req.body;
-
-    if (!setupCode) {
-        return res.status(400).json({
-            status: "error",
-            message: "Matter 설정 코드는 필수 항목입니다."
-        });
-    }
-
-    try {
-        // 디바이스 정보 조회
-        const deviceInfo = deviceState.get(deviceId);
-        if (!deviceInfo) {
-            return res.status(404).json({
-                status: "error",
-                message: "디바이스를 찾을 수 없습니다."
-            });
-        }
-
-        logToFile('INFO', `페어링 시작 - Device: ${deviceInfo.name}, Setup Code: ${setupCode}`);
-        
-        // QR 코드나 수동 페어링 코드로 페어링 시도
-        const command = `pairing code ${deviceId} ${setupCode}`;
-        const result = await executeMatterCommand(command);
-
-        // 디바이스 상태 업데이트
-        deviceState.set(deviceId, {
-            ...deviceInfo,
-            setupCode,
-            status: 'paired',
-            pairingTimestamp: new Date().toISOString()
-        });
-
-        res.json({
-            status: "success",
-            message: "디바이스 페어링 완료",
-            deviceInfo: deviceState.get(deviceId)
-        });
-    } catch (error) {
-        const errorDetails = handleMatterError(error);
-        res.status(500).json({
-            status: "error",
-            ...errorDetails
-        });
-    }
-});
-
-// 3. 페어링된 디바이스 Wi-Fi 커미셔닝
-app.post("/api/device/commission", async (req, res) => {
-    const { 
-        deviceId,
-        setupCode,    // Matter 설정 코드 (QR 코드나 수동 페어링 코드)
-        discriminator, // 디바이스 discriminator
-        ssid,        // Wi-Fi SSID
-        password,    // Wi-Fi 비밀번호
-        paaStorePath // 선택사항: 커스텀 PAA 인증서 경로
-    } = req.body;
-
-    try {
-        // 필수 파라미터 검증
-        if (!setupCode || !discriminator || !ssid || !password) {
-            return res.status(400).json({
-                status: "error",
-                message: "필수 파라미터가 누락되었습니다. (setupCode, discriminator, ssid, password)"
-            });
-        }
-
-        // 디바이스 정보 조회
-        const deviceInfo = deviceState.get(deviceId);
-        if (!deviceInfo) {
-            return res.status(404).json({
-                status: "error",
-                message: "디바이스를 찾을 수 없습니다."
-            });
-        }
-
-        logToFile('INFO', `Wi-Fi 커미셔닝 시작 - Device: ${deviceInfo.name}, SSID: ${ssid}`);
-        
-        // PAA 인증서 경로 설정
-        const paaCertPath = paaStorePath || MATTER_CONFIG.paaStorePath;
-        
-        // Wi-Fi 커미셔닝 명령어 구성
-        const command = `pairing code-wifi ${deviceId} ${ssid} ${password} ${setupCode} --paa-trust-store-path ${paaCertPath}`;
-        
-        logToFile('INFO', `커미셔닝 명령어 실행 (민감 정보 제외): pairing code-wifi ${deviceId} [SSID] [PASSWORD] [SETUP_CODE] --paa-trust-store-path ${paaCertPath}`);
-        
-        const result = await executeMatterCommand(command);
-
-        // 디바이스 상태 업데이트
-        deviceState.set(deviceId, {
-            ...deviceInfo,
-            status: 'commissioned',
-            network: {
-                ssid: ssid,
-                timestamp: new Date().toISOString()
-            },
-            setupCode: setupCode,
-            discriminator: discriminator
-        });
-
-        res.json({
-            status: "success",
-            message: "Wi-Fi 커미셔닝 완료",
-            deviceInfo: {
-                ...deviceState.get(deviceId),
-                // 민감 정보 제외
-                network: {
-                    ssid: ssid,
-                    timestamp: new Date().toISOString()
-                }
-            }
         });
     } catch (error) {
         const errorDetails = handleMatterError(error);
