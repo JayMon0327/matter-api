@@ -192,33 +192,41 @@ const parseDiscoveryResult = (result) => {
         const devices = [];
         let currentDevice = null;
 
-        // 터미널 컬러 코드 제거 함수
-        const cleanValue = (value) => {
-            if (!value) return '';
-            // [0m 등의 터미널 컬러 코드 제거
-            return value.replace(/\[\d+m/g, '').trim();
+        // 타임스탬프와 로그 레벨 제거 함수
+        const cleanLine = (line) => {
+            // [1744266250.301] [47866:47868] [DIS] 와 같은 prefix 제거
+            return line.replace(/\[\d+\.\d+\]\s*\[\d+:\d+\]\s*\[\w+\]\s*/, '').trim();
+        };
+
+        // 값 추출 함수
+        const extractValue = (line) => {
+            const colonIndex = line.indexOf(':');
+            if (colonIndex === -1) return '';
+            return line.substring(colonIndex + 1).trim();
         };
 
         // 결과를 줄 단위로 분석
         const lines = result.split('\n');
         for (const line of lines) {
-            const trimmedLine = line.trim();
+            const cleanedLine = cleanLine(line);
             
             // 새로운 디바이스 시작
-            if (trimmedLine.includes('Device Configuration:')) {
+            if (cleanedLine === 'Discovered commissionable/commissioner node:') {
                 if (currentDevice) {
                     devices.push(currentDevice);
                 }
                 currentDevice = {
                     name: '',
-                    setupPinCode: '',        // Setup Pin Code
-                    setupDiscriminator: '',  // Setup Discriminator
+                    addresses: [],
+                    port: '',
                     vendorId: '',
                     productId: '',
                     deviceType: '',
+                    discriminator: '',
+                    pairingHint: '',
                     instanceName: '',
-                    manualPairingCode: '',   // Manual pairing code
-                    addresses: []
+                    commissioningMode: '',
+                    supportsCommissionerGeneratedPasscode: false
                 };
                 continue;
             }
@@ -226,53 +234,42 @@ const parseDiscoveryResult = (result) => {
             if (!currentDevice) continue;
 
             // 디바이스 정보 파싱
-            if (trimmedLine.includes('Hostname:')) {
-                currentDevice.name = cleanValue(trimmedLine.split('Hostname:')[1]);
+            if (cleanedLine.startsWith('Hostname:')) {
+                currentDevice.name = extractValue(cleanedLine);
             }
-            else if (trimmedLine.includes('Setup Pin Code')) {
-                const match = trimmedLine.match(/Setup Pin Code.*?:\s*(\d+)/);
-                if (match) {
-                    currentDevice.setupPinCode = match[1];
-                }
-            }
-            else if (trimmedLine.includes('Setup Discriminator')) {
-                const match = trimmedLine.match(/Setup Discriminator.*?:\s*(\d+)/);
-                if (match) {
-                    currentDevice.setupDiscriminator = match[1];
-                }
-            }
-            else if (trimmedLine.includes('Vendor Id:')) {
-                const match = trimmedLine.match(/Vendor Id:.*?(\d+)/);
-                if (match) {
-                    currentDevice.vendorId = match[1];
-                }
-            }
-            else if (trimmedLine.includes('Product Id:')) {
-                const match = trimmedLine.match(/Product Id:.*?(\d+)/);
-                if (match) {
-                    currentDevice.productId = match[1];
-                }
-            }
-            else if (trimmedLine.includes('Device Type:')) {
-                const match = trimmedLine.match(/Device Type:.*?(\d+)/);
-                if (match) {
-                    currentDevice.deviceType = match[1];
-                }
-            }
-            else if (trimmedLine.includes('Instance Name:')) {
-                currentDevice.instanceName = cleanValue(trimmedLine.split('Instance Name:')[1]);
-            }
-            else if (trimmedLine.includes('IP Address #')) {
-                const address = cleanValue(trimmedLine.split(':').slice(-1)[0]);
+            else if (cleanedLine.startsWith('IP Address #')) {
+                const address = extractValue(cleanedLine);
                 if (address) {
                     currentDevice.addresses.push(address);
                 }
             }
-            else if (trimmedLine.includes('Manual pairing code:')) {
-                const match = trimmedLine.match(/\[(\d+)\]/);
-                if (match) {
-                    currentDevice.manualPairingCode = match[1];
-                }
+            else if (cleanedLine.startsWith('Port:')) {
+                currentDevice.port = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Vendor ID:')) {
+                currentDevice.vendorId = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Product ID:')) {
+                currentDevice.productId = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Device Type:')) {
+                currentDevice.deviceType = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Long Discriminator:')) {
+                currentDevice.discriminator = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Pairing Hint:')) {
+                currentDevice.pairingHint = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Instance Name:')) {
+                currentDevice.instanceName = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Commissioning Mode:')) {
+                currentDevice.commissioningMode = extractValue(cleanedLine);
+            }
+            else if (cleanedLine.startsWith('Supports Commissioner Generated Passcode:')) {
+                currentDevice.supportsCommissionerGeneratedPasscode = 
+                    extractValue(cleanedLine).toLowerCase() === 'true';
             }
         }
 
