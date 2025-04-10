@@ -196,15 +196,19 @@ const parseDiscoveryResult = (result) => {
         // 결과를 줄 단위로 분석
         const lines = result.split('\n');
         for (const line of lines) {
-            // [DIS] 태그가 있는 라인만 처리
+            // [CHIP:DIS] 또는 [DIS] 태그가 있는 라인만 처리
             if (!line.includes('[DIS]')) {
                 continue;
             }
 
-            const disContent = line.split('[DIS]')[1].trim();
+            // 타임스탬프와 프로세스 ID 제거
+            const match = line.match(/\[DIS\](.*)/);
+            if (!match) continue;
+            
+            const content = match[1].trim();
 
             // 새로운 디바이스 발견 시작
-            if (disContent === 'Discovered commissionable/commissioner node:') {
+            if (content === 'Discovered commissionable/commissioner node:') {
                 if (currentDevice) {
                     devices.push(currentDevice);
                 }
@@ -228,7 +232,7 @@ const parseDiscoveryResult = (result) => {
             if (!isParsingDevice || !currentDevice) continue;
 
             // 디바이스 정보 파싱
-            const trimmedContent = disContent.trim();
+            const trimmedContent = content.trim();
             
             if (trimmedContent.startsWith('Hostname:')) {
                 currentDevice.name = trimmedContent.split('Hostname:')[1].trim();
@@ -274,6 +278,12 @@ const parseDiscoveryResult = (result) => {
             devices.push(currentDevice);
         }
 
+        // 디버깅을 위한 로그
+        logToFile('INFO', `파싱된 디바이스 수: ${devices.length}`);
+        if (devices.length > 0) {
+            logToFile('INFO', `첫 번째 디바이스 정보: ${JSON.stringify(devices[0], null, 2)}`);
+        }
+
         // nodeId 자동 생성 및 할당
         return devices.map((device, index) => ({
             ...device,
@@ -283,7 +293,7 @@ const parseDiscoveryResult = (result) => {
 
     } catch (error) {
         logToFile('ERROR', `디바이스 검색 결과 파싱 중 오류: ${error.message}`);
-        console.error('파싱 오류:', error);
+        logToFile('ERROR', `파싱 시도한 원본 데이터: ${result}`);
         return [];
     }
 };
