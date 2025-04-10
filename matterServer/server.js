@@ -16,7 +16,9 @@ const MATTER_CONFIG = {
     fabricId: process.env.MATTER_FABRIC_ID,
     defaultNodeId: "1",
     timeout: 60000,
-    logPath: '/home/ubuntu/matter-api/matterServer/logs'  // 로그 저장 경로
+    logPath: '/home/ubuntu/matter-api/matterServer/logs',  // 로그 저장 경로
+    // 개발용 PAA 인증서 경로 (기본값)
+    paaStorePath: process.env.MATTER_PAA_STORE_PATH || '/home/ubuntu/connectedhomeip/credentials/development/paa-root-certs'
 };
 
 // 로그 디렉토리 생성
@@ -374,9 +376,13 @@ app.post("/api/device/search", async (req, res) => {
 
 // 2. 검색된 디바이스와 페어링 시도
 app.post("/api/device/pair", async (req, res) => {
-    const { deviceId, manualPairingCode } = req.body;
+    const { 
+        deviceId,
+        setupCode,     // QR 코드 또는 수동 페어링 코드
+        discriminator  // QR 코드에서 추출한 discriminator (선택사항)
+    } = req.body;
 
-    if (!manualPairingCode) {
+    if (!setupCode) {
         return res.status(400).json({
             status: "error",
             message: "Matter 설정 코드는 필수 항목입니다."
@@ -393,14 +399,16 @@ app.post("/api/device/pair", async (req, res) => {
             });
         }
 
-        logToFile('INFO', `페어링 시작 - Device: ${deviceInfo.name}, Manual Pairing Code: ${manualPairingCode}`);
-        const command = `pairing code ${deviceId} ${manualPairingCode}`;
+        logToFile('INFO', `페어링 시작 - Device: ${deviceInfo.name}, Setup Code: ${setupCode}`);
+        
+        // QR 코드나 수동 페어링 코드로 페어링 시도
+        const command = `pairing code ${deviceId} ${setupCode}`;
         const result = await executeMatterCommand(command);
 
         // 디바이스 상태 업데이트
         deviceState.set(deviceId, {
             ...deviceInfo,
-            manualPairingCode,
+            setupCode,
             status: 'paired',
             pairingTimestamp: new Date().toISOString()
         });
@@ -423,11 +431,22 @@ app.post("/api/device/pair", async (req, res) => {
 app.post("/api/device/commission", async (req, res) => {
     const { 
         deviceId,
-        ssid,      // 선택사항: 현재 연결된 Wi-Fi 정보
-        password   // 선택사항: 현재 연결된 Wi-Fi 정보
+        setupCode,    // Matter 설정 코드 (QR 코드나 수동 페어링 코드)
+        discriminator, // 디바이스 discriminator
+        ssid,        // Wi-Fi SSID
+        password,    // Wi-Fi 비밀번호
+        paaStorePath // 선택사항: 커스텀 PAA 인증서 경로
     } = req.body;
 
     try {
+        // 필수 파라미터 검증
+        if (!setupCode || !discriminator || !ssid || !password) {
+            return res.status(400).json({
+                status: "error",
+                message: "필수 파라미터가 누락되었습니다. (setupCode, discriminator, ssid, password)"
+            });
+        }
+
         // 디바이스 정보 조회
         const deviceInfo = deviceState.get(deviceId);
         if (!deviceInfo) {
@@ -437,26 +456,16 @@ app.post("/api/device/commission", async (req, res) => {
             });
         }
 
-        if (deviceInfo.status !== 'paired') {
-            return res.status(400).json({
-                status: "error",
-                message: "페어링이 완료되지 않은 디바이스입니다."
-            });
-        }
-
-        // Wi-Fi 정보 확인
-        const wifiSSID = ssid || process.env.WIFI_SSID;
-        const wifiPassword = password || process.env.WIFI_PASSWORD;
-
-        if (!wifiSSID || !wifiPassword) {
-            return res.status(400).json({
-                status: "error",
-                message: "Wi-Fi 정보가 제공되지 않았습니다."
-            });
-        }
-
-        logToFile('INFO', `Wi-Fi 커미셔닝 시작 - Device: ${deviceInfo.name}, SSID: ${wifiSSID}`);
-        const command = `pairing ble-wifi ${deviceId} ${deviceInfo.setupDiscriminator} "${wifiSSID}" "${wifiPassword}"`;
+        logToFile('INFO', `Wi-Fi 커미셔닝 시작 - Device: ${deviceInfo.name}, SSID: ${ssid}`);
+        
+        // PAA 인증서 경로 설정
+        const paaCertPath = paaStorePath || MATTER_CONFIG.paaStorePath;
+        
+        // Wi-Fi 커미셔닝 명령어 구성
+        const command = `pairing code-wifi ${deviceId} ${ssid} ${password} ${setupCode} --paa-trust-store-path ${paaCertPath}`;
+        
+        logToFile('INFO', `커미셔닝 명령어 실행 (민감 정보 제외): pairing code-wifi ${deviceId} [SSID] [PASSWORD] [SETUP_CODE] --paa-trust-store-path ${paaCertPath}`);
+        
         const result = await executeMatterCommand(command);
 
         // 디바이스 상태 업데이트
@@ -464,15 +473,24 @@ app.post("/api/device/commission", async (req, res) => {
             ...deviceInfo,
             status: 'commissioned',
             network: {
-                ssid: wifiSSID,
+                ssid: ssid,
                 timestamp: new Date().toISOString()
-            }
+            },
+            setupCode: setupCode,
+            discriminator: discriminator
         });
 
         res.json({
             status: "success",
             message: "Wi-Fi 커미셔닝 완료",
-            deviceInfo: deviceState.get(deviceId)
+            deviceInfo: {
+                ...deviceState.get(deviceId),
+                // 민감 정보 제외
+                network: {
+                    ssid: ssid,
+                    timestamp: new Date().toISOString()
+                }
+            }
         });
     } catch (error) {
         const errorDetails = handleMatterError(error);
