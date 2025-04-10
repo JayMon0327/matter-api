@@ -129,11 +129,13 @@ const executeMatterCommand = (command, timeout = MATTER_CONFIG.timeout) => {
 const handleMatterError = (error) => {
     logToFile('ERROR_HANDLER', `에러 처리: ${error.message}`);
     
-    // Matter SDK의 타임아웃 에러 확인 (CHIP Error: Timeout)
-    if (error.message.includes("Timeout") || error.stderr?.includes("Timeout")) {
+    // Matter SDK의 타임아웃 에러 확인 (CHIP Error 0x00000032: Timeout)
+    if (error.message.includes("CHIP Error 0x00000032: Timeout") || 
+        error.stderr?.includes("CHIP Error 0x00000032: Timeout")) {
         return {
             code: "TIMEOUT_ERROR",
-            message: "Matter 명령어 실행이 시간 초과되었습니다."
+            message: "Matter 명령어 실행이 시간 초과되었습니다.",
+            errorCode: "0x00000032"
         };
     }
     
@@ -156,6 +158,16 @@ const handleMatterError = (error) => {
         };
     }
     
+    // Matter SDK 에러 코드 패턴 확인 (CHIP Error 0x...)
+    const chipErrorMatch = (error.message || error.stderr || '').match(/CHIP Error (0x[0-9a-fA-F]+)/);
+    if (chipErrorMatch) {
+        return {
+            code: "MATTER_SDK_ERROR",
+            message: `Matter SDK 오류가 발생했습니다.`,
+            errorCode: chipErrorMatch[1]
+        };
+    }
+    
     // 기타 Matter SDK 관련 에러 메시지 처리
     if (error.stderr) {
         return {
@@ -170,6 +182,201 @@ const handleMatterError = (error) => {
     };
 };
 
+// Matter 디바이스 검색 결과 파싱 함수
+const parseDiscoveryResult = (result) => {
+    try {
+        // 결과가 비어있는 경우
+        if (!result || result.trim() === '') {
+            return [];
+        }
+
+        // 결과 문자열을 줄 단위로 분리하고 파싱
+        const lines = result.split('\n').filter(line => line.trim() !== '');
+        return lines.map(line => {
+            // 디바이스 이름과 discriminator 파싱 (예: "MyDevice (3840)")
+            const match = line.match(/([^(]+)\s*\((\d+)\)/);
+            if (match) {
+                return {
+                    name: match[1].trim(),
+                    discriminator: match[2],
+                    nodeId: generateNodeId(), // 자동 생성된 nodeId
+                    type: detectDeviceType(line), // 디바이스 타입 감지
+                    raw: line // 디버깅용 원본 데이터
+                };
+            }
+            return null;
+        }).filter(device => device !== null);
+    } catch (error) {
+        logToFile('ERROR', `디바이스 검색 결과 파싱 중 오류: ${error.message}`);
+        return [];
+    }
+};
+
+// NodeId 생성 함수
+const generateNodeId = (() => {
+    let lastId = 0;
+    return () => {
+        lastId += 1;
+        return lastId.toString();
+    };
+})();
+
+// 디바이스 타입 감지 함수
+const detectDeviceType = (deviceInfo) => {
+    // Matter SDK의 출력을 분석하여 디바이스 타입 판단
+    if (deviceInfo.toLowerCase().includes('wifi')) {
+        return 'wifi';
+    } else if (deviceInfo.toLowerCase().includes('thread')) {
+        return 'thread';
+    }
+    return 'unknown';
+};
+
+// 1. Matter 설정 코드로 디바이스 검색 시작
+app.post("/api/device/search", async (req, res) => {
+    const { setupCode } = req.body;
+
+    if (!setupCode) {
+        return res.status(400).json({
+            status: "error",
+            message: "Matter 설정 코드는 필수 항목입니다."
+        });
+    }
+
+    try {
+        logToFile('INFO', `Matter 설정 코드 [${setupCode}]로 디바이스 검색 시작`);
+        const command = `discover commissionables`;
+        const result = await executeMatterCommand(command);
+        const devices = parseDiscoveryResult(result);
+
+        // 검색된 디바이스 정보 저장
+        devices.forEach(device => {
+            deviceState.set(device.nodeId, {
+                ...device,
+                setupCode,
+                status: 'discovered',
+                timestamp: new Date().toISOString()
+            });
+        });
+
+        res.json({
+            status: "success",
+            message: devices.length > 0 ? "디바이스 검색 완료" : "검색된 디바이스가 없습니다.",
+            devices: devices
+        });
+    } catch (error) {
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
+// 2. 검색된 디바이스와 페어링 시도
+app.post("/api/device/pair", async (req, res) => {
+    const { deviceId } = req.body;
+
+    try {
+        // 디바이스 정보 조회
+        const deviceInfo = deviceState.get(deviceId);
+        if (!deviceInfo) {
+            return res.status(404).json({
+                status: "error",
+                message: "디바이스를 찾을 수 없습니다."
+            });
+        }
+
+        logToFile('INFO', `페어링 시작 - Device: ${deviceInfo.name}, SetupCode: ${deviceInfo.setupCode}`);
+        const command = `pairing code ${deviceId} ${deviceInfo.setupCode}`;
+        const result = await executeMatterCommand(command);
+
+        // 디바이스 상태 업데이트
+        deviceState.set(deviceId, {
+            ...deviceInfo,
+            status: 'paired',
+            pairingTimestamp: new Date().toISOString()
+        });
+
+        res.json({
+            status: "success",
+            message: "디바이스 페어링 완료",
+            deviceInfo: deviceState.get(deviceId)
+        });
+    } catch (error) {
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
+// 3. 페어링된 디바이스 Wi-Fi 커미셔닝
+app.post("/api/device/commission", async (req, res) => {
+    const { 
+        deviceId,
+        ssid,      // 선택사항: 현재 연결된 Wi-Fi 정보
+        password   // 선택사항: 현재 연결된 Wi-Fi 정보
+    } = req.body;
+
+    try {
+        // 디바이스 정보 조회
+        const deviceInfo = deviceState.get(deviceId);
+        if (!deviceInfo) {
+            return res.status(404).json({
+                status: "error",
+                message: "디바이스를 찾을 수 없습니다."
+            });
+        }
+
+        if (deviceInfo.status !== 'paired') {
+            return res.status(400).json({
+                status: "error",
+                message: "페어링이 완료되지 않은 디바이스입니다."
+            });
+        }
+
+        // Wi-Fi 정보 확인
+        const wifiSSID = ssid || process.env.WIFI_SSID;
+        const wifiPassword = password || process.env.WIFI_PASSWORD;
+
+        if (!wifiSSID || !wifiPassword) {
+            return res.status(400).json({
+                status: "error",
+                message: "Wi-Fi 정보가 제공되지 않았습니다."
+            });
+        }
+
+        logToFile('INFO', `Wi-Fi 커미셔닝 시작 - Device: ${deviceInfo.name}, SSID: ${wifiSSID}`);
+        const command = `pairing ble-wifi ${deviceId} ${deviceInfo.discriminator} "${wifiSSID}" "${wifiPassword}"`;
+        const result = await executeMatterCommand(command);
+
+        // 디바이스 상태 업데이트
+        deviceState.set(deviceId, {
+            ...deviceInfo,
+            status: 'commissioned',
+            network: {
+                ssid: wifiSSID,
+                timestamp: new Date().toISOString()
+            }
+        });
+
+        res.json({
+            status: "success",
+            message: "Wi-Fi 커미셔닝 완료",
+            deviceInfo: deviceState.get(deviceId)
+        });
+    } catch (error) {
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
+// 기존 API들은 디버깅 및 테스트용으로 유지
 // 1. 디바이스 검색 시작
 app.post("/api/discovery/scan", async (req, res) => {
     try {
@@ -177,11 +384,21 @@ app.post("/api/discovery/scan", async (req, res) => {
         const command = `discover commissionables`;
         
         const result = await executeMatterCommand(command);
+        const devices = parseDiscoveryResult(result);
         
+        // 검색된 디바이스 정보를 메모리에 저장
+        devices.forEach(device => {
+            deviceState.set(device.nodeId, {
+                ...device,
+                status: 'discovered',
+                timestamp: new Date().toISOString()
+            });
+        });
+
         res.json({
             status: "success",
             message: "커미셔닝 가능한 디바이스 검색 완료",
-            devices: result
+            devices: devices
         });
     } catch (error) {
         const errorDetails = handleMatterError(error);
@@ -221,110 +438,22 @@ app.get("/api/discovery/list", async (req, res) => {
         const command = `discover list`;
         
         const result = await executeMatterCommand(command);
+        const devices = parseDiscoveryResult(result);
         
-        // 결과가 비어있는 경우 처리
-        if (!result || result.trim() === '') {
-            return res.json({
-                status: "success",
-                message: "발견된 디바이스가 없습니다.",
-                devices: []
-            });
-        }
-        
-        res.json({
-            status: "success",
-            message: "발견된 디바이스 목록 조회 완료",
-            devices: result
-        });
-    } catch (error) {
-        const errorDetails = handleMatterError(error);
-        res.status(500).json({
-            status: "error",
-            ...errorDetails
-        });
-    }
-});
-
-// 2. Matter 설정 코드 페어링 엔드포인트
-app.post("/api/pairing/code", async (req, res) => {
-    const {
-        nodeId = MATTER_CONFIG.defaultNodeId,
-        setupCode,
-        discriminator
-    } = req.body;
-
-    if (!setupCode) {
-        return res.status(400).json({
-            status: "error",
-            message: "설정 코드는 필수 항목입니다."
-        });
-    }
-
-    try {
-        logToFile('INFO', `페어링 시작 - NodeID: ${nodeId}, SetupCode: ${setupCode}`);
-        
-        const command = `pairing code ${nodeId} ${setupCode}`;
-        const result = await executeMatterCommand(command);
-
-        deviceState.set(nodeId, {
-            status: "paired",
-            setupCode,
-            discriminator,
-            timestamp: new Date().toISOString()
+        // 메모리에 저장된 디바이스 상태 정보 추가
+        const devicesWithState = devices.map(device => {
+            const state = deviceState.get(device.nodeId);
+            return {
+                ...device,
+                status: state?.status || 'discovered',
+                lastSeen: state?.timestamp || new Date().toISOString()
+            };
         });
 
         res.json({
             status: "success",
-            message: "디바이스 페어링 완료",
-            deviceInfo: deviceState.get(nodeId),
-            output: result
-        });
-    } catch (error) {
-        const errorDetails = handleMatterError(error);
-        res.status(500).json({
-            status: "error",
-            ...errorDetails
-        });
-    }
-});
-
-// 3. Wi-Fi 설정 및 커미셔닝 엔드포인트
-app.post("/api/commissioning/wifi", async (req, res) => {
-    const {
-        nodeId = MATTER_CONFIG.defaultNodeId,
-        ssid,
-        password,
-        discriminator
-    } = req.body;
-
-    if (!ssid || !password) {
-        return res.status(400).json({
-            status: "error",
-            message: "Wi-Fi SSID와 비밀번호는 필수 항목입니다."
-        });
-    }
-
-    try {
-        logToFile('INFO', `Wi-Fi 커미셔닝 시작 - NodeID: ${nodeId}, SSID: ${ssid}`);
-        
-        const command = `pairing ble-wifi ${nodeId} ${discriminator} "${ssid}" "${password}"`;
-        const result = await executeMatterCommand(command);
-
-        const deviceInfo = deviceState.get(nodeId) || {};
-        deviceState.set(nodeId, {
-            ...deviceInfo,
-            status: "commissioned",
-            network: {
-                ssid,
-                timestamp: new Date().toISOString()
-            }
-        });
-
-        res.json({
-            status: "success",
-            message: "Wi-Fi 설정 및 커미셔닝 완료",
-            deviceInfo: deviceState.get(nodeId),
-            output: result
+            message: devices.length > 0 ? "발견된 디바이스 목록 조회 완료" : "발견된 디바이스가 없습니다.",
+            devices: devicesWithState
         });
     } catch (error) {
         const errorDetails = handleMatterError(error);
