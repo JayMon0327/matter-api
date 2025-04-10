@@ -261,7 +261,7 @@ const parseDiscoveryResult = (result) => {
                 currentDevice.name = extractValue(cleanLine, 'Hostname');
             }
             else if (cleanLine.includes('IP Address #')) {
-                const address = cleanLine.split('IP Address #')[1].split(':').slice(-1)[0].trim();
+                const address = cleanLine.split('IP Address #')[1].split(':').slice(1).join(':').trim();
                 if (address && address !== 'not present') {
                     currentDevice.addresses.push(address);
                 }
