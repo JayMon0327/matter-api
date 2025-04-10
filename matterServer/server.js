@@ -101,7 +101,23 @@ const executeMatterCommand = (command, timeout = MATTER_CONFIG.timeout) => {
                     reject(error);
                     return;
                 }
-                logToFile('SUCCESS', `실행 결과: ${stdout}`);
+
+                // 상세 로깅 추가
+                logToFile('DEBUG', '=== Matter SDK 명령어 실행 결과 시작 ===');
+                logToFile('DEBUG', `표준 출력 타입: ${typeof stdout}`);
+                logToFile('DEBUG', `표준 출력 길이: ${stdout.length}`);
+                logToFile('DEBUG', '표준 출력 내용:');
+                logToFile('DEBUG', stdout);
+                
+                // stdout에서 [DIS] 태그가 있는 라인만 추출하여 로깅
+                const disLines = stdout.split('\n')
+                    .filter(line => line.includes('[DIS]'))
+                    .join('\n');
+                
+                logToFile('DEBUG', '=== [DIS] 태그 포함된 라인만 ===');
+                logToFile('DEBUG', disLines);
+                logToFile('DEBUG', '=== Matter SDK 명령어 실행 결과 끝 ===');
+
                 resolve(stdout);
             });
 
