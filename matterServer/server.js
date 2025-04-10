@@ -207,7 +207,11 @@ const parseDiscoveryResult = (result) => {
 
         const devices = [];
         let currentDevice = null;
-        let isParsingDevice = false;
+
+        // ANSI 이스케이프 시퀀스 제거 함수
+        const removeAnsiEscapes = (str) => {
+            return str.replace(/\x1b\[[0-9;]*m/g, '');
+        };
 
         // 결과를 줄 단위로 분석
         const lines = result.split('\n');
@@ -217,78 +221,83 @@ const parseDiscoveryResult = (result) => {
                 continue;
             }
 
-            // 타임스탬프와 프로세스 ID 제거
-            const match = line.match(/\[DIS\](.*)/);
-            if (!match) continue;
+            const cleanLine = removeAnsiEscapes(line.trim());
             
-            const content = match[1].trim();
-
-            // 새로운 디바이스 발견 시작
-            if (content === 'Discovered commissionable/commissioner node:') {
+            // 새로운 디바이스 시작
+            if (cleanLine.includes('Discovered commissionable/commissioner node:')) {
                 if (currentDevice) {
                     devices.push(currentDevice);
                 }
                 currentDevice = {
                     name: '',
-                    addresses: [],
-                    port: '',
+                    setupPinCode: '',
+                    setupDiscriminator: '',
                     vendorId: '',
                     productId: '',
                     deviceType: '',
-                    discriminator: '',
-                    pairingHint: '',
                     instanceName: '',
+                    addresses: [],
+                    port: '',
+                    pairingHint: '',
                     commissioningMode: '',
                     supportsCommissionerGeneratedPasscode: false
                 };
-                isParsingDevice = true;
                 continue;
             }
 
-            if (!isParsingDevice || !currentDevice) continue;
+            if (!currentDevice) continue;
+
+            // 값 추출 함수
+            const extractValue = (line, key) => {
+                const parts = line.split(key + ':');
+                if (parts.length > 1) {
+                    return removeAnsiEscapes(parts[1].trim());
+                }
+                return '';
+            };
 
             // 디바이스 정보 파싱
-            if (content.startsWith('Hostname:')) {
-                currentDevice.name = content.split('Hostname:')[1].trim();
+            if (cleanLine.includes('Hostname:')) {
+                currentDevice.name = extractValue(cleanLine, 'Hostname');
             }
-            else if (content.startsWith('IP Address #')) {
-                const address = content.split(':')[2].trim();
+            else if (cleanLine.includes('IP Address #')) {
+                const address = cleanLine.split('IP Address #')[1].split(':').slice(-1)[0].trim();
                 if (address && address !== 'not present') {
                     currentDevice.addresses.push(address);
                 }
             }
-            else if (content.startsWith('Port:')) {
-                currentDevice.port = content.split('Port:')[1].trim();
+            else if (cleanLine.includes('Port:')) {
+                currentDevice.port = extractValue(cleanLine, 'Port');
             }
-            else if (content.startsWith('Vendor ID:')) {
-                currentDevice.vendorId = content.split('Vendor ID:')[1].trim();
+            else if (cleanLine.includes('Long Discriminator:')) {
+                currentDevice.setupDiscriminator = extractValue(cleanLine, 'Long Discriminator');
             }
-            else if (content.startsWith('Product ID:')) {
-                currentDevice.productId = content.split('Product ID:')[1].trim();
+            else if (cleanLine.includes('Vendor ID:')) {
+                currentDevice.vendorId = extractValue(cleanLine, 'Vendor ID');
             }
-            else if (content.startsWith('Device Type:')) {
-                currentDevice.deviceType = content.split('Device Type:')[1].trim();
+            else if (cleanLine.includes('Product ID:')) {
+                currentDevice.productId = extractValue(cleanLine, 'Product ID');
             }
-            else if (content.startsWith('Long Discriminator:')) {
-                currentDevice.discriminator = content.split('Long Discriminator:')[1].trim();
+            else if (cleanLine.includes('Device Type:')) {
+                currentDevice.deviceType = extractValue(cleanLine, 'Device Type');
             }
-            else if (content.startsWith('Pairing Hint:')) {
-                currentDevice.pairingHint = content.split('Pairing Hint:')[1].trim();
+            else if (cleanLine.includes('Instance Name:')) {
+                currentDevice.instanceName = extractValue(cleanLine, 'Instance Name');
             }
-            else if (content.startsWith('Instance Name:')) {
-                currentDevice.instanceName = content.split('Instance Name:')[1].trim();
+            else if (cleanLine.includes('Pairing Hint:')) {
+                currentDevice.pairingHint = extractValue(cleanLine, 'Pairing Hint');
             }
-            else if (content.startsWith('Commissioning Mode:')) {
-                currentDevice.commissioningMode = content.split('Commissioning Mode:')[1].trim();
+            else if (cleanLine.includes('Commissioning Mode:')) {
+                currentDevice.commissioningMode = extractValue(cleanLine, 'Commissioning Mode');
             }
-            else if (content.startsWith('Supports Commissioner Generated Passcode:')) {
+            else if (cleanLine.includes('Supports Commissioner Generated Passcode:')) {
                 currentDevice.supportsCommissionerGeneratedPasscode = 
-                    content.split('Supports Commissioner Generated Passcode:')[1].trim().toLowerCase() === 'true';
+                    extractValue(cleanLine, 'Supports Commissioner Generated Passcode') === 'true';
             }
         }
 
         // 마지막 디바이스 추가
-        if (currentDevice && isParsingDevice) {
+        if (currentDevice) {
             devices.push(currentDevice);
         }
 
@@ -298,6 +307,7 @@ const parseDiscoveryResult = (result) => {
             logToFile('INFO', `첫 번째 디바이스 정보: ${JSON.stringify(devices[0], null, 2)}`);
         }
 
+        // nodeId 자동 생성 및 할당
         return devices.map((device, index) => ({
             ...device,
             nodeId: (index + 1).toString(),
@@ -446,7 +456,7 @@ app.post("/api/device/commission", async (req, res) => {
         }
 
         logToFile('INFO', `Wi-Fi 커미셔닝 시작 - Device: ${deviceInfo.name}, SSID: ${wifiSSID}`);
-        const command = `pairing ble-wifi ${deviceId} ${deviceInfo.discriminator} "${wifiSSID}" "${wifiPassword}"`;
+        const command = `pairing ble-wifi ${deviceId} ${deviceInfo.setupDiscriminator} "${wifiSSID}" "${wifiPassword}"`;
         const result = await executeMatterCommand(command);
 
         // 디바이스 상태 업데이트
