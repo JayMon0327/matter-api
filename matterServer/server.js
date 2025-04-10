@@ -191,27 +191,20 @@ const parseDiscoveryResult = (result) => {
 
         const devices = [];
         let currentDevice = null;
-
-        // 타임스탬프와 로그 레벨 제거 함수
-        const cleanLine = (line) => {
-            // [1744266250.301] [47866:47868] [DIS] 와 같은 prefix 제거
-            return line.replace(/\[\d+\.\d+\]\s*\[\d+:\d+\]\s*\[\w+\]\s*/, '').trim();
-        };
-
-        // 값 추출 함수
-        const extractValue = (line) => {
-            const colonIndex = line.indexOf(':');
-            if (colonIndex === -1) return '';
-            return line.substring(colonIndex + 1).trim();
-        };
+        let isParsingDevice = false;
 
         // 결과를 줄 단위로 분석
         const lines = result.split('\n');
         for (const line of lines) {
-            const cleanedLine = cleanLine(line);
-            
-            // 새로운 디바이스 시작
-            if (cleanedLine === 'Discovered commissionable/commissioner node:') {
+            // [DIS] 태그가 있는 라인만 처리
+            if (!line.includes('[DIS]')) {
+                continue;
+            }
+
+            const disContent = line.split('[DIS]')[1].trim();
+
+            // 새로운 디바이스 발견 시작
+            if (disContent === 'Discovered commissionable/commissioner node:') {
                 if (currentDevice) {
                     devices.push(currentDevice);
                 }
@@ -228,53 +221,56 @@ const parseDiscoveryResult = (result) => {
                     commissioningMode: '',
                     supportsCommissionerGeneratedPasscode: false
                 };
+                isParsingDevice = true;
                 continue;
             }
 
-            if (!currentDevice) continue;
+            if (!isParsingDevice || !currentDevice) continue;
 
             // 디바이스 정보 파싱
-            if (cleanedLine.startsWith('Hostname:')) {
-                currentDevice.name = extractValue(cleanedLine);
+            const trimmedContent = disContent.trim();
+            
+            if (trimmedContent.startsWith('Hostname:')) {
+                currentDevice.name = trimmedContent.split('Hostname:')[1].trim();
             }
-            else if (cleanedLine.startsWith('IP Address #')) {
-                const address = extractValue(cleanedLine);
-                if (address) {
+            else if (trimmedContent.startsWith('IP Address #')) {
+                const address = trimmedContent.split(':')[1].trim();
+                if (address && address !== 'not present') {
                     currentDevice.addresses.push(address);
                 }
             }
-            else if (cleanedLine.startsWith('Port:')) {
-                currentDevice.port = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Port:')) {
+                currentDevice.port = trimmedContent.split('Port:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Vendor ID:')) {
-                currentDevice.vendorId = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Vendor ID:')) {
+                currentDevice.vendorId = trimmedContent.split('Vendor ID:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Product ID:')) {
-                currentDevice.productId = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Product ID:')) {
+                currentDevice.productId = trimmedContent.split('Product ID:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Device Type:')) {
-                currentDevice.deviceType = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Device Type:')) {
+                currentDevice.deviceType = trimmedContent.split('Device Type:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Long Discriminator:')) {
-                currentDevice.discriminator = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Long Discriminator:')) {
+                currentDevice.discriminator = trimmedContent.split('Long Discriminator:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Pairing Hint:')) {
-                currentDevice.pairingHint = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Pairing Hint:')) {
+                currentDevice.pairingHint = trimmedContent.split('Pairing Hint:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Instance Name:')) {
-                currentDevice.instanceName = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Instance Name:')) {
+                currentDevice.instanceName = trimmedContent.split('Instance Name:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Commissioning Mode:')) {
-                currentDevice.commissioningMode = extractValue(cleanedLine);
+            else if (trimmedContent.startsWith('Commissioning Mode:')) {
+                currentDevice.commissioningMode = trimmedContent.split('Commissioning Mode:')[1].trim();
             }
-            else if (cleanedLine.startsWith('Supports Commissioner Generated Passcode:')) {
+            else if (trimmedContent.startsWith('Supports Commissioner Generated Passcode:')) {
                 currentDevice.supportsCommissionerGeneratedPasscode = 
-                    extractValue(cleanedLine).toLowerCase() === 'true';
+                    trimmedContent.split('Supports Commissioner Generated Passcode:')[1].trim().toLowerCase() === 'true';
             }
         }
 
         // 마지막 디바이스 추가
-        if (currentDevice) {
+        if (currentDevice && isParsingDevice) {
             devices.push(currentDevice);
         }
 
@@ -287,6 +283,7 @@ const parseDiscoveryResult = (result) => {
 
     } catch (error) {
         logToFile('ERROR', `디바이스 검색 결과 파싱 중 오류: ${error.message}`);
+        console.error('파싱 오류:', error);
         return [];
     }
 };
