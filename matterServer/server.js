@@ -185,27 +185,91 @@ const handleMatterError = (error) => {
 // Matter 디바이스 검색 결과 파싱 함수
 const parseDiscoveryResult = (result) => {
     try {
-        // 결과가 비어있는 경우
         if (!result || result.trim() === '') {
             return [];
         }
 
-        // 결과 문자열을 줄 단위로 분리하고 파싱
-        const lines = result.split('\n').filter(line => line.trim() !== '');
-        return lines.map(line => {
-            // 디바이스 이름과 discriminator 파싱 (예: "MyDevice (3840)")
-            const match = line.match(/([^(]+)\s*\((\d+)\)/);
-            if (match) {
-                return {
-                    name: match[1].trim(),
-                    discriminator: match[2],
-                    nodeId: generateNodeId(), // 자동 생성된 nodeId
-                    type: detectDeviceType(line), // 디바이스 타입 감지
-                    raw: line // 디버깅용 원본 데이터
+        const devices = [];
+        let currentDevice = null;
+
+        // 결과를 줄 단위로 분석
+        const lines = result.split('\n');
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            
+            // 새로운 디바이스 시작
+            if (trimmedLine.includes('Discovered commissionable/commissioner node:')) {
+                if (currentDevice) {
+                    devices.push(currentDevice);
+                }
+                currentDevice = {
+                    name: '',
+                    setupPinCode: '',        // Setup Pin Code
+                    setupDiscriminator: '',  // Setup Discriminator
+                    vendorId: '',
+                    productId: '',
+                    deviceType: '',
+                    instanceName: '',
+                    addresses: []
                 };
+                continue;
             }
-            return null;
-        }).filter(device => device !== null);
+
+            if (!currentDevice) continue;
+
+            // 디바이스 정보 파싱
+            if (trimmedLine.includes('Hostname:')) {
+                currentDevice.name = trimmedLine.split('Hostname:')[1].trim();
+            }
+            else if (trimmedLine.includes('Setup Pin Code:')) {
+                currentDevice.setupPinCode = trimmedLine.split('Setup Pin Code:')[1].trim();
+            }
+            else if (trimmedLine.includes('Setup Discriminator:')) {
+                currentDevice.setupDiscriminator = trimmedLine.split('Setup Discriminator:')[1].trim();
+            }
+            else if (trimmedLine.includes('Long Discriminator:')) {
+                // Setup Discriminator가 없는 경우 Long Discriminator 사용
+                if (!currentDevice.setupDiscriminator) {
+                    currentDevice.setupDiscriminator = trimmedLine.split('Long Discriminator:')[1].trim();
+                }
+            }
+            else if (trimmedLine.includes('Vendor ID:')) {
+                currentDevice.vendorId = trimmedLine.split('Vendor ID:')[1].trim();
+            }
+            else if (trimmedLine.includes('Product ID:')) {
+                currentDevice.productId = trimmedLine.split('Product ID:')[1].trim();
+            }
+            else if (trimmedLine.includes('Device Type:')) {
+                currentDevice.deviceType = trimmedLine.split('Device Type:')[1].trim();
+            }
+            else if (trimmedLine.includes('Instance Name:')) {
+                currentDevice.instanceName = trimmedLine.split('Instance Name:')[1].trim();
+            }
+            else if (trimmedLine.includes('IP Address #')) {
+                const address = trimmedLine.split(':').slice(-1)[0].trim();
+                currentDevice.addresses.push(address);
+            }
+            // Manual pairing code 파싱 추가
+            else if (trimmedLine.includes('Manual pairing code:')) {
+                const match = trimmedLine.match(/\[(\d+)\]/);
+                if (match) {
+                    currentDevice.manualPairingCode = match[1];
+                }
+            }
+        }
+
+        // 마지막 디바이스 추가
+        if (currentDevice) {
+            devices.push(currentDevice);
+        }
+
+        // nodeId 자동 생성 및 할당
+        return devices.map((device, index) => ({
+            ...device,
+            nodeId: (index + 1).toString(),
+            type: 'wifi'
+        }));
+
     } catch (error) {
         logToFile('ERROR', `디바이스 검색 결과 파싱 중 오류: ${error.message}`);
         return [];
@@ -232,19 +296,10 @@ const detectDeviceType = (deviceInfo) => {
     return 'unknown';
 };
 
-// 1. Matter 설정 코드로 디바이스 검색 시작
+// 1. Matter 디바이스 검색 시작
 app.post("/api/device/search", async (req, res) => {
-    const { setupCode } = req.body;
-
-    if (!setupCode) {
-        return res.status(400).json({
-            status: "error",
-            message: "Matter 설정 코드는 필수 항목입니다."
-        });
-    }
-
     try {
-        logToFile('INFO', `Matter 설정 코드 [${setupCode}]로 디바이스 검색 시작`);
+        logToFile('INFO', `Matter 디바이스 검색 시작`);
         const command = `discover commissionables`;
         const result = await executeMatterCommand(command);
         const devices = parseDiscoveryResult(result);
@@ -253,7 +308,6 @@ app.post("/api/device/search", async (req, res) => {
         devices.forEach(device => {
             deviceState.set(device.nodeId, {
                 ...device,
-                setupCode,
                 status: 'discovered',
                 timestamp: new Date().toISOString()
             });
@@ -275,7 +329,14 @@ app.post("/api/device/search", async (req, res) => {
 
 // 2. 검색된 디바이스와 페어링 시도
 app.post("/api/device/pair", async (req, res) => {
-    const { deviceId } = req.body;
+    const { deviceId, manualPairingCode } = req.body;
+
+    if (!manualPairingCode) {
+        return res.status(400).json({
+            status: "error",
+            message: "Matter 설정 코드는 필수 항목입니다."
+        });
+    }
 
     try {
         // 디바이스 정보 조회
@@ -287,13 +348,14 @@ app.post("/api/device/pair", async (req, res) => {
             });
         }
 
-        logToFile('INFO', `페어링 시작 - Device: ${deviceInfo.name}, SetupCode: ${deviceInfo.setupCode}`);
-        const command = `pairing code ${deviceId} ${deviceInfo.setupCode}`;
+        logToFile('INFO', `페어링 시작 - Device: ${deviceInfo.name}, Manual Pairing Code: ${manualPairingCode}`);
+        const command = `pairing code ${deviceId} ${manualPairingCode}`;
         const result = await executeMatterCommand(command);
 
         // 디바이스 상태 업데이트
         deviceState.set(deviceId, {
             ...deviceInfo,
+            manualPairingCode,
             status: 'paired',
             pairingTimestamp: new Date().toISOString()
         });
