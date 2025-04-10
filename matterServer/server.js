@@ -129,6 +129,14 @@ const executeMatterCommand = (command, timeout = MATTER_CONFIG.timeout) => {
 const handleMatterError = (error) => {
     logToFile('ERROR_HANDLER', `에러 처리: ${error.message}`);
     
+    // Matter SDK의 타임아웃 에러 확인 (CHIP Error: Timeout)
+    if (error.message.includes("Timeout") || error.stderr?.includes("Timeout")) {
+        return {
+            code: "TIMEOUT_ERROR",
+            message: "Matter 명령어 실행이 시간 초과되었습니다."
+        };
+    }
+    
     if (error.message.includes("CHIP:BLE")) {
         return {
             code: "BLE_ERROR",
@@ -147,13 +155,22 @@ const handleMatterError = (error) => {
             message: "Matter SDK 명령어를 찾을 수 없습니다. SDK 경로를 확인해주세요."
         };
     }
+    
+    // 기타 Matter SDK 관련 에러 메시지 처리
+    if (error.stderr) {
+        return {
+            code: "MATTER_SDK_ERROR",
+            message: `Matter SDK 오류: ${error.stderr}`
+        };
+    }
+    
     return {
         code: "UNKNOWN_ERROR",
         message: `알 수 없는 오류가 발생했습니다: ${error.message}`
     };
 };
 
-// 1. 디바이스 검색 엔드포인트
+// 1. 디바이스 검색 시작
 app.post("/api/discovery/scan", async (req, res) => {
     try {
         logToFile('INFO', "Matter 디바이스 검색 시작...");
@@ -164,6 +181,59 @@ app.post("/api/discovery/scan", async (req, res) => {
         res.json({
             status: "success",
             message: "커미셔닝 가능한 디바이스 검색 완료",
+            devices: result
+        });
+    } catch (error) {
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
+// 2. 디바이스 검색 중지
+app.post("/api/discovery/stop", async (req, res) => {
+    try {
+        logToFile('INFO', "Matter 디바이스 검색 중지...");
+        const command = `discover stop`;
+        
+        const result = await executeMatterCommand(command);
+        
+        res.json({
+            status: "success",
+            message: "디바이스 검색이 중지되었습니다.",
+            result: result
+        });
+    } catch (error) {
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
+// 3. 발견된 디바이스 목록 조회
+app.get("/api/discovery/list", async (req, res) => {
+    try {
+        logToFile('INFO', "발견된 Matter 디바이스 목록 조회...");
+        const command = `discover list`;
+        
+        const result = await executeMatterCommand(command);
+        
+        // 결과가 비어있는 경우 처리
+        if (!result || result.trim() === '') {
+            return res.json({
+                status: "success",
+                message: "발견된 디바이스가 없습니다.",
+                devices: []
+            });
+        }
+        
+        res.json({
+            status: "success",
+            message: "발견된 디바이스 목록 조회 완료",
             devices: result
         });
     } catch (error) {
