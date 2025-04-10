@@ -212,7 +212,7 @@ const parseDiscoveryResult = (result) => {
         // 결과를 줄 단위로 분석
         const lines = result.split('\n');
         for (const line of lines) {
-            // [CHIP:DIS] 또는 [DIS] 태그가 있는 라인만 처리
+            // [DIS] 태그가 있는 라인만 처리
             if (!line.includes('[DIS]')) {
                 continue;
             }
@@ -248,44 +248,42 @@ const parseDiscoveryResult = (result) => {
             if (!isParsingDevice || !currentDevice) continue;
 
             // 디바이스 정보 파싱
-            const trimmedContent = content.trim();
-            
-            if (trimmedContent.startsWith('Hostname:')) {
-                currentDevice.name = trimmedContent.split('Hostname:')[1].trim();
+            if (content.startsWith('Hostname:')) {
+                currentDevice.name = content.split('Hostname:')[1].trim();
             }
-            else if (trimmedContent.startsWith('IP Address #')) {
-                const address = trimmedContent.split(':')[1].trim();
+            else if (content.startsWith('IP Address #')) {
+                const address = content.split(':')[2].trim();
                 if (address && address !== 'not present') {
                     currentDevice.addresses.push(address);
                 }
             }
-            else if (trimmedContent.startsWith('Port:')) {
-                currentDevice.port = trimmedContent.split('Port:')[1].trim();
+            else if (content.startsWith('Port:')) {
+                currentDevice.port = content.split('Port:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Vendor ID:')) {
-                currentDevice.vendorId = trimmedContent.split('Vendor ID:')[1].trim();
+            else if (content.startsWith('Vendor ID:')) {
+                currentDevice.vendorId = content.split('Vendor ID:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Product ID:')) {
-                currentDevice.productId = trimmedContent.split('Product ID:')[1].trim();
+            else if (content.startsWith('Product ID:')) {
+                currentDevice.productId = content.split('Product ID:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Device Type:')) {
-                currentDevice.deviceType = trimmedContent.split('Device Type:')[1].trim();
+            else if (content.startsWith('Device Type:')) {
+                currentDevice.deviceType = content.split('Device Type:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Long Discriminator:')) {
-                currentDevice.discriminator = trimmedContent.split('Long Discriminator:')[1].trim();
+            else if (content.startsWith('Long Discriminator:')) {
+                currentDevice.discriminator = content.split('Long Discriminator:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Pairing Hint:')) {
-                currentDevice.pairingHint = trimmedContent.split('Pairing Hint:')[1].trim();
+            else if (content.startsWith('Pairing Hint:')) {
+                currentDevice.pairingHint = content.split('Pairing Hint:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Instance Name:')) {
-                currentDevice.instanceName = trimmedContent.split('Instance Name:')[1].trim();
+            else if (content.startsWith('Instance Name:')) {
+                currentDevice.instanceName = content.split('Instance Name:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Commissioning Mode:')) {
-                currentDevice.commissioningMode = trimmedContent.split('Commissioning Mode:')[1].trim();
+            else if (content.startsWith('Commissioning Mode:')) {
+                currentDevice.commissioningMode = content.split('Commissioning Mode:')[1].trim();
             }
-            else if (trimmedContent.startsWith('Supports Commissioner Generated Passcode:')) {
+            else if (content.startsWith('Supports Commissioner Generated Passcode:')) {
                 currentDevice.supportsCommissionerGeneratedPasscode = 
-                    trimmedContent.split('Supports Commissioner Generated Passcode:')[1].trim().toLowerCase() === 'true';
+                    content.split('Supports Commissioner Generated Passcode:')[1].trim().toLowerCase() === 'true';
             }
         }
 
@@ -300,7 +298,6 @@ const parseDiscoveryResult = (result) => {
             logToFile('INFO', `첫 번째 디바이스 정보: ${JSON.stringify(devices[0], null, 2)}`);
         }
 
-        // nodeId 자동 생성 및 할당
         return devices.map((device, index) => ({
             ...device,
             nodeId: (index + 1).toString(),
