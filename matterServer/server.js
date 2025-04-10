@@ -601,6 +601,96 @@ app.get("/api/logs", (req, res) => {
     }
 });
 
+app.post("/api/device/pair", async (req, res) => {
+    const {
+        pairingMethod,
+        pairingCode,
+        ssid,
+        password,
+        deviceId,
+        qrCode
+    } = req.body;
+
+    try {
+        // 기본 파라미터 검증
+        if (!pairingMethod || !ssid || !password) {
+            throw new Error("필수 파라미터가 누락되었습니다. (pairingMethod, ssid, password)");
+        }
+
+        // 페어링 방식별 검증
+        let targetDeviceId = deviceId;
+        let formattedPairingCode = pairingCode;
+
+        switch (pairingMethod) {
+            case 'discovery':
+                if (!deviceId) {
+                    throw new Error("discovery 방식에는 deviceId가 필요합니다.");
+                }
+                const deviceInfo = deviceState.get(deviceId);
+                if (!deviceInfo) {
+                    throw new Error('디바이스를 찾을 수 없습니다.');
+                }
+                break;
+
+            case 'manual':
+                if (!pairingCode) {
+                    throw new Error("manual 방식에는 pairingCode가 필요합니다.");
+                }
+                formattedPairingCode = validateManualPairingCode(pairingCode);
+                targetDeviceId = generateNodeId();
+                break;
+
+            case 'qr':
+                if (!qrCode) {
+                    throw new Error("QR 방식에는 qrCode가 필요합니다.");
+                }
+                // QR 코드 파싱 로직 구현 필요
+                // const { code, discriminator } = parseMattertQRCode(qrCode);
+                // formattedPairingCode = code;
+                targetDeviceId = generateNodeId();
+                break;
+
+            default:
+                throw new Error("지원하지 않는 페어링 방식입니다.");
+        }
+
+        logToFile('INFO', `페어링 시작 - Method: ${pairingMethod}, DeviceId: ${targetDeviceId}`);
+
+        // 페어링 명령 실행
+        const command = `pairing code-wifi ${targetDeviceId} "${ssid}" "${password}" ${formattedPairingCode} --paa-trust-store-path ${MATTER_CONFIG.paaStorePath}`;
+        const result = await executeMatterCommand(command);
+
+        // 성공 시 deviceState에 추가
+        deviceState.set(targetDeviceId, {
+            nodeId: targetDeviceId,
+            status: 'commissioned',
+            pairingMethod,
+            timestamp: new Date().toISOString(),
+            network: { 
+                ssid,
+                timestamp: new Date().toISOString()
+            }
+        });
+
+        res.json({
+            status: "success",
+            message: "페어링 완료",
+            deviceId: targetDeviceId,
+            deviceInfo: deviceState.get(targetDeviceId)
+        });
+
+    } catch (error) {
+        logToFile('ERROR', `페어링 중 오류 발생: ${error.message}`);
+        logToFile('ERROR', `스택 트레이스: ${error.stack}`);
+        
+        const errorDetails = handleMatterError(error);
+        res.status(500).json({
+            status: "error",
+            ...errorDetails
+        });
+    }
+});
+
 // 서버 시작
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
