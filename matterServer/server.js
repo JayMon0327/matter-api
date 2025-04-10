@@ -12,7 +12,7 @@ app.use(bodyParser.json());
 // Matter SDK 설정
 const MATTER_CONFIG = {
     sdkPath: process.env.MATTER_SDK_PATH || '/home/ubuntu/connectedhomeip',
-    chipToolPath: 'out/debug/standalone/chip-tool',  // SDK 내의 chip-tool 상대 경로
+    chipToolPath: 'out/chip-tool/chip-tool',  // 수정된 정확한 chip-tool 경로
     fabricId: process.env.MATTER_FABRIC_ID,
     defaultNodeId: "1",
     timeout: 60000,
@@ -41,8 +41,18 @@ const deviceState = new Map();
 const executeMatterCommand = (command, timeout = MATTER_CONFIG.timeout) => {
     return new Promise((resolve, reject) => {
         // 전체 명령어 경로 구성
-        const fullCommand = `cd ${MATTER_CONFIG.sdkPath} && ./${MATTER_CONFIG.chipToolPath} ${command}`;
+        const chipToolFullPath = path.join(MATTER_CONFIG.sdkPath, MATTER_CONFIG.chipToolPath);
+        const fullCommand = `cd ${MATTER_CONFIG.sdkPath} && ${chipToolFullPath} ${command}`;
+        
         logToFile('COMMAND', `실행: ${fullCommand}`);
+        logToFile('PATH', `Chip Tool 경로: ${chipToolFullPath}`);
+        
+        // 실행 파일 존재 확인
+        if (!fs.existsSync(chipToolFullPath)) {
+            logToFile('ERROR', `chip-tool이 존재하지 않습니다: ${chipToolFullPath}`);
+            reject(new Error(`chip-tool not found at ${chipToolFullPath}`));
+            return;
+        }
         
         const childProcess = exec(fullCommand, { timeout }, (error, stdout, stderr) => {
             if (error) {
