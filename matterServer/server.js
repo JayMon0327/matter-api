@@ -200,6 +200,19 @@ const handleMatterError = (error) => {
     };
 };
 
+// Matter Manual Pairing Code 검증 함수
+const validateManualPairingCode = (code) => {
+    // 숫자만 추출
+    const numericCode = code.replace(/\D/g, '');
+    
+    // Matter Manual Pairing Code는 11자리 숫자
+    if (numericCode.length !== 11) {
+        throw new Error('Matter Manual Pairing Code는 11자리 숫자여야 합니다.');
+    }
+    
+    return numericCode;
+};
+
 // Matter 디바이스 검색 결과 파싱 함수
 const parseDiscoveryResult = (result) => {
     try {
@@ -231,19 +244,19 @@ const parseDiscoveryResult = (result) => {
                     devices.push(currentDevice);
                 }
                 currentDevice = {
-                    nodeId: '',              // Matter 노드 ID
-                    name: '',                // 디바이스 이름
-                    setupPinCode: '',        // Matter 설정 PIN 코드
-                    setupDiscriminator: '',  // Matter discriminator
-                    vendorId: '',           // 벤더 ID
-                    productId: '',          // 제품 ID
-                    deviceType: '',         // 디바이스 타입
-                    instanceName: '',       // 인스턴스 이름
-                    addresses: [],          // IP 주소 목록
-                    port: '',              // 포트
-                    pairingHint: '',       // 페어링 힌트
-                    commissioningMode: '', // 커미셔닝 모드
-                    type: 'wifi'           // 네트워크 타입 (wifi/thread)
+                    nodeId: '',                // Matter 노드 ID
+                    name: '',                  // 디바이스 이름
+                    setupPinCode: '',          // Matter Setup PIN Code
+                    setupDiscriminator: '',    // Matter Setup Discriminator
+                    vendorId: '',             // 벤더 ID
+                    productId: '',            // 제품 ID
+                    deviceType: '',           // 디바이스 타입
+                    instanceName: '',         // 인스턴스 이름
+                    addresses: [],            // IP 주소 목록
+                    port: '',                // 포트
+                    pairingHint: '',         // 페어링 힌트
+                    commissioningMode: '',    // 커미셔닝 모드
+                    type: 'wifi'             // 네트워크 타입 (wifi/thread)
                 };
                 continue;
             }
@@ -336,27 +349,36 @@ const detectDeviceType = (deviceInfo) => {
 // Matter 디바이스 Wi-Fi 페어링 및 커미셔닝
 app.post("/api/device/setup", async (req, res) => {
     const { 
-        nodeId,            // Matter 노드 ID
-        setupPinCode,      // Matter 설정 PIN 코드
-        setupDiscriminator,// Matter discriminator
-        ssid,             // Wi-Fi SSID
-        password,         // Wi-Fi 비밀번호
-        paaStorePath      // 선택사항: 커스텀 PAA 인증서 경로
+        nodeId,              // Matter 노드 ID
+        manualPairingCode,   // Matter Manual Pairing Code (페어링용)
+        ssid,               // Wi-Fi SSID
+        password,           // Wi-Fi 비밀번호
+        paaStorePath        // 선택사항: 커스텀 PAA 인증서 경로
     } = req.body;
 
     try {
         logToFile('DEBUG', `Wi-Fi 페어링 및 커미셔닝 요청 수신 - 요청 데이터: ${JSON.stringify({
             nodeId,
-            setupDiscriminator,
             ssid,
-            setupPinCode: '***',
+            manualPairingCode: '***',
             password: '***'
         }, null, 2)}`);
 
         // 필수 파라미터 검증
-        if (!setupPinCode || !ssid || !password) {
-            const error = new Error("필수 파라미터가 누락되었습니다. (setupPinCode, ssid, password)");
+        if (!manualPairingCode || !ssid || !password) {
+            const error = new Error("필수 파라미터가 누락되었습니다. (manualPairingCode, ssid, password)");
             logToFile('ERROR', error.message);
+            return res.status(400).json({
+                status: "error",
+                message: error.message
+            });
+        }
+
+        // Matter Manual Pairing Code 검증
+        let formattedPairingCode;
+        try {
+            formattedPairingCode = validateManualPairingCode(manualPairingCode);
+        } catch (error) {
             return res.status(400).json({
                 status: "error",
                 message: error.message
@@ -380,22 +402,20 @@ app.post("/api/device/setup", async (req, res) => {
         const paaCertPath = paaStorePath || MATTER_CONFIG.paaStorePath;
         
         // Wi-Fi 페어링 및 커미셔닝 명령어 구성
-        const command = `pairing code-wifi ${nodeId} "${ssid}" "${password}" ${setupPinCode} --paa-trust-store-path ${paaCertPath}`;
+        const command = `pairing code-wifi ${nodeId} "${ssid}" "${password}" ${formattedPairingCode} --paa-trust-store-path ${paaCertPath}`;
         
-        logToFile('INFO', `페어링 및 커미셔닝 명령어 실행 (민감 정보 제외): pairing code-wifi ${nodeId} [SSID] [PASSWORD] [SETUP_PIN_CODE] --paa-trust-store-path ${paaCertPath}`);
+        logToFile('INFO', `페어링 및 커미셔닝 명령어 실행 (민감 정보 제외): pairing code-wifi ${nodeId} [SSID] [PASSWORD] [MANUAL_PAIRING_CODE] --paa-trust-store-path ${paaCertPath}`);
         
         const result = await executeMatterCommand(command);
 
-        // 디바이스 상태 업데이트
+        // 디바이스 상태 업데이트 (기존 Setup PIN Code와 Setup Discriminator 유지)
         const updatedDeviceInfo = {
             ...deviceInfo,
             status: 'commissioned',
             network: {
                 ssid: ssid,
                 timestamp: new Date().toISOString()
-            },
-            setupPinCode,
-            setupDiscriminator
+            }
         };
         
         deviceState.set(nodeId, updatedDeviceInfo);
@@ -415,6 +435,16 @@ app.post("/api/device/setup", async (req, res) => {
     } catch (error) {
         logToFile('ERROR', `페어링 및 커미셔닝 중 오류 발생: ${error.message}`);
         logToFile('ERROR', `스택 트레이스: ${error.stack}`);
+        
+        // Matter SDK 특정 에러 처리
+        if (error.message.includes('Integrity check failed')) {
+            return res.status(400).json({
+                status: "error",
+                code: "INVALID_PAIRING_CODE",
+                message: "올바르지 않은 Matter Manual Pairing Code입니다. 코드를 다시 확인해주세요."
+            });
+        }
+        
         const errorDetails = handleMatterError(error);
         res.status(500).json({
             status: "error",
