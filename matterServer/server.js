@@ -157,13 +157,13 @@ const handleMatterError = (error) => {
 app.post("/api/discovery/scan", async (req, res) => {
     try {
         logToFile('INFO', "Matter 디바이스 검색 시작...");
-        const command = `discover`;
+        const command = `discover commissionables`;
         
         const result = await executeMatterCommand(command);
         
         res.json({
             status: "success",
-            message: "디바이스 검색 완료",
+            message: "커미셔닝 가능한 디바이스 검색 완료",
             devices: result
         });
     } catch (error) {
