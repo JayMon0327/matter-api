@@ -192,13 +192,20 @@ const parseDiscoveryResult = (result) => {
         const devices = [];
         let currentDevice = null;
 
+        // 터미널 컬러 코드 제거 함수
+        const cleanValue = (value) => {
+            if (!value) return '';
+            // [0m 등의 터미널 컬러 코드 제거
+            return value.replace(/\[\d+m/g, '').trim();
+        };
+
         // 결과를 줄 단위로 분석
         const lines = result.split('\n');
         for (const line of lines) {
             const trimmedLine = line.trim();
             
             // 새로운 디바이스 시작
-            if (trimmedLine.includes('Discovered commissionable/commissioner node:')) {
+            if (trimmedLine.includes('Device Configuration:')) {
                 if (currentDevice) {
                     devices.push(currentDevice);
                 }
@@ -210,6 +217,7 @@ const parseDiscoveryResult = (result) => {
                     productId: '',
                     deviceType: '',
                     instanceName: '',
+                    manualPairingCode: '',   // Manual pairing code
                     addresses: []
                 };
                 continue;
@@ -219,37 +227,47 @@ const parseDiscoveryResult = (result) => {
 
             // 디바이스 정보 파싱
             if (trimmedLine.includes('Hostname:')) {
-                currentDevice.name = trimmedLine.split('Hostname:')[1].trim();
+                currentDevice.name = cleanValue(trimmedLine.split('Hostname:')[1]);
             }
-            else if (trimmedLine.includes('Setup Pin Code:')) {
-                currentDevice.setupPinCode = trimmedLine.split('Setup Pin Code:')[1].trim();
-            }
-            else if (trimmedLine.includes('Setup Discriminator:')) {
-                currentDevice.setupDiscriminator = trimmedLine.split('Setup Discriminator:')[1].trim();
-            }
-            else if (trimmedLine.includes('Long Discriminator:')) {
-                // Setup Discriminator가 없는 경우 Long Discriminator 사용
-                if (!currentDevice.setupDiscriminator) {
-                    currentDevice.setupDiscriminator = trimmedLine.split('Long Discriminator:')[1].trim();
+            else if (trimmedLine.includes('Setup Pin Code')) {
+                const match = trimmedLine.match(/Setup Pin Code.*?:\s*(\d+)/);
+                if (match) {
+                    currentDevice.setupPinCode = match[1];
                 }
             }
-            else if (trimmedLine.includes('Vendor ID:')) {
-                currentDevice.vendorId = trimmedLine.split('Vendor ID:')[1].trim();
+            else if (trimmedLine.includes('Setup Discriminator')) {
+                const match = trimmedLine.match(/Setup Discriminator.*?:\s*(\d+)/);
+                if (match) {
+                    currentDevice.setupDiscriminator = match[1];
+                }
             }
-            else if (trimmedLine.includes('Product ID:')) {
-                currentDevice.productId = trimmedLine.split('Product ID:')[1].trim();
+            else if (trimmedLine.includes('Vendor Id:')) {
+                const match = trimmedLine.match(/Vendor Id:.*?(\d+)/);
+                if (match) {
+                    currentDevice.vendorId = match[1];
+                }
+            }
+            else if (trimmedLine.includes('Product Id:')) {
+                const match = trimmedLine.match(/Product Id:.*?(\d+)/);
+                if (match) {
+                    currentDevice.productId = match[1];
+                }
             }
             else if (trimmedLine.includes('Device Type:')) {
-                currentDevice.deviceType = trimmedLine.split('Device Type:')[1].trim();
+                const match = trimmedLine.match(/Device Type:.*?(\d+)/);
+                if (match) {
+                    currentDevice.deviceType = match[1];
+                }
             }
             else if (trimmedLine.includes('Instance Name:')) {
-                currentDevice.instanceName = trimmedLine.split('Instance Name:')[1].trim();
+                currentDevice.instanceName = cleanValue(trimmedLine.split('Instance Name:')[1]);
             }
             else if (trimmedLine.includes('IP Address #')) {
-                const address = trimmedLine.split(':').slice(-1)[0].trim();
-                currentDevice.addresses.push(address);
+                const address = cleanValue(trimmedLine.split(':').slice(-1)[0]);
+                if (address) {
+                    currentDevice.addresses.push(address);
+                }
             }
-            // Manual pairing code 파싱 추가
             else if (trimmedLine.includes('Manual pairing code:')) {
                 const match = trimmedLine.match(/\[(\d+)\]/);
                 if (match) {
